@@ -32,15 +32,16 @@ import java.util.Set;
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class GitHubBlockStateTest {
 
-    static String commitSHA = "7f638829311dfc1d341c1db85d8a891f57fa4da7";
-    static String treeSHA = "9b96943196bfbb8b49651eab5e479956d7dabcc7"; // https://github.com/ethereum/tests/tree/develop/BlockchainTests/GeneralStateTests/
+    static String commitSHA = "253e99861fe406c7b1daf3d6a0c40906e8a8fd8f";
+    static String treeSHA = "724427f69f5573ed0f504a534b3ecbcd3070fa28"; // https://github.com/ethereum/tests/tree/develop/BlockchainTests/GeneralStateTests/
 
     static GitHubJSONTestSuite.Network[] targetNets = {
             GitHubJSONTestSuite.Network.Frontier,
             GitHubJSONTestSuite.Network.Homestead,
             GitHubJSONTestSuite.Network.EIP150,
             GitHubJSONTestSuite.Network.EIP158,
-            GitHubJSONTestSuite.Network.Byzantium
+            GitHubJSONTestSuite.Network.Byzantium,
+            GitHubJSONTestSuite.Network.Constantinople
     };
 
     static BlockchainTestSuite suite;
@@ -153,7 +154,6 @@ public class GitHubBlockStateTest {
     }
 
     @Test
-    @Ignore
     public void bcStMemoryStressTest() throws IOException {
         Set<String> excluded = new HashSet<>();
         excluded.add("mload32bitBound_return2");// The test extends memory to 4Gb which can't be handled with Java arrays
@@ -299,5 +299,25 @@ public class GitHubBlockStateTest {
     @Test
     public void stCodeCopyTest() throws IOException {
         suite.runAll("stCodeCopyTest");
+    }
+
+    @Test
+    public void stExtCodeHash() throws IOException {
+        suite.runAll("stExtCodeHash");
+    }
+
+    @Test
+    public void stShiftTest() throws IOException {
+        suite.runAll("stShift");
+    }
+
+    @Test
+    public void stCreate2Test() throws IOException {
+        suite.runAll("stCreate2");
+    }
+
+    @Test
+    public void stSstoreTest() throws IOException {
+        suite.runAll("stSStoreTest");
     }
 }

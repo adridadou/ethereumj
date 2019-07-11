@@ -17,7 +17,6 @@
  */
 package org.ethereum.facade;
 
-import org.apache.commons.lang3.ArrayUtils;
 import org.ethereum.config.BlockchainConfig;
 import org.ethereum.config.CommonConfig;
 import org.ethereum.config.SystemProperties;
@@ -27,7 +26,6 @@ import org.ethereum.core.Repository;
 import org.ethereum.crypto.ECKey;
 import org.ethereum.listener.CompositeEthereumListener;
 import org.ethereum.listener.EthereumListener;
-import org.ethereum.listener.EthereumListenerAdapter;
 import org.ethereum.listener.GasPriceTracker;
 import org.ethereum.manager.AdminInfo;
 import org.ethereum.manager.BlockLoader;
@@ -41,6 +39,7 @@ import org.ethereum.net.submit.TransactionExecutor;
 import org.ethereum.net.submit.TransactionTask;
 import org.ethereum.sync.SyncManager;
 import org.ethereum.util.ByteUtil;
+import org.ethereum.vm.hook.VMHook;
 import org.ethereum.vm.program.ProgramResult;
 import org.ethereum.vm.program.invoke.ProgramInvokeFactory;
 import org.slf4j.Logger;
@@ -56,8 +55,11 @@ import org.springframework.util.concurrent.FutureAdapter;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * @author Roman Mandeleil
@@ -112,7 +114,7 @@ public class EthereumImpl implements Ethereum, SmartLifecycle {
         this.config = config;
         System.out.println();
         this.compositeEthereumListener.addListener(gasPriceTracker);
-        gLogger.info("EthereumJ node started: enode://" + Hex.toHexString(config.nodeId()) + "@" + config.externalIp() + ":" + config.listenPort());
+        gLogger.info("EthereumJ node started: enode://" + toHexString(config.nodeId()) + "@" + config.externalIp() + ":" + config.listenPort());
     }
 
     @Override
@@ -223,7 +225,7 @@ public class EthereumImpl implements Ethereum, SmartLifecycle {
     @Override
     public TransactionReceipt callConstant(Transaction tx, Block block) {
         if (tx.getSignature() == null) {
-            tx.sign(ECKey.fromPrivate(new byte[32]));
+            tx.sign(ECKey.DUMMY);
         }
         return callConstantImpl(tx, block).getReceipt();
     }
@@ -249,7 +251,7 @@ public class EthereumImpl implements Ethereum, SmartLifecycle {
                 Repository txTrack = track.startTracking();
                 org.ethereum.core.TransactionExecutor executor = new org.ethereum.core.TransactionExecutor(
                         tx, block.getCoinbase(), txTrack, worldManager.getBlockStore(),
-                        programInvokeFactory, block, worldManager.getListener(), 0)
+                        programInvokeFactory, block, worldManager.getListener(), 0, VMHook.EMPTY)
                         .withCommonConfig(commonConfig);
 
                 executor.init();
@@ -281,7 +283,7 @@ public class EthereumImpl implements Ethereum, SmartLifecycle {
         try {
             org.ethereum.core.TransactionExecutor executor = new org.ethereum.core.TransactionExecutor
                     (tx, block.getCoinbase(), repository, worldManager.getBlockStore(),
-                            programInvokeFactory, block, new EthereumListenerAdapter(), 0)
+                            programInvokeFactory, block)
                     .withCommonConfig(commonConfig)
                     .setLocalCall(true);
 
@@ -299,7 +301,7 @@ public class EthereumImpl implements Ethereum, SmartLifecycle {
     @Override
     public ProgramResult callConstantFunction(String receiveAddress,
                                               CallTransaction.Function function, Object... funcArgs) {
-        return callConstantFunction(receiveAddress, ECKey.fromPrivate(new byte[32]), function, funcArgs);
+        return callConstantFunction(receiveAddress, ECKey.DUMMY, function, funcArgs);
     }
 
     @Override
@@ -378,6 +380,10 @@ public class EthereumImpl implements Ethereum, SmartLifecycle {
         BlockchainConfig nextBlockConfig = config.getBlockchainConfig().getConfigForBlock(getBlockchain()
                 .getBestBlock().getNumber() + 1);
         return nextBlockConfig.getChainId();
+    }
+
+    public CompletableFuture<Void> switchToShortSync() {
+        return syncManager.switchToShortSync();
     }
 
     @Override

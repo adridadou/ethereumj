@@ -109,6 +109,7 @@ public class CallTransaction {
         public Param[] outputs = new Param[0];
         public FunctionType type;
         public StateMutabilityType stateMutability;
+        public Long gas;
 
         private Function() {}
 
@@ -232,7 +233,7 @@ public class CallTransaction {
     public static class Contract {
         public Contract(String jsonInterface) {
             try {
-                functions = new ObjectMapper().readValue(jsonInterface, Function[].class);
+                functions = DEFAULT_MAPPER.readValue(jsonInterface, Function[].class);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
@@ -288,6 +289,8 @@ public class CallTransaction {
 
         /**
          * Parses Solidity Event and its data members from transaction receipt LogInfo
+         * Finds corresponding event by its signature hash and thus is not applicable to
+         * anonymous events
          */
         public Invocation parseEvent(LogInfo eventLog) {
             CallTransaction.Function event = getBySignatureHash(eventLog.getTopics().get(0).getData());
@@ -297,10 +300,19 @@ public class CallTransaction {
             List<Param> unindexed = new ArrayList<>();
             for (Param input : event.inputs) {
                 if (input.indexed) {
-                    indexedArgs.add(input.type.decode(eventLog.getTopics().get(indexedArg++).getData()));
-                    continue;
+                    byte[] topicBytes = eventLog.getTopics().get(indexedArg++).getData();
+                    Object decodedTopic;
+                    if (input.type.isDynamicType()) {
+                        // If arrays (including string and bytes) are used as indexed arguments,
+                        // the Keccak-256 hash of it is stored as topic instead.
+                        decodedTopic = SolidityType.Bytes32Type.decodeBytes32(topicBytes, 0);
+                    } else {
+                        decodedTopic = input.type.decode(topicBytes);
+                    }
+                    indexedArgs.add(decodedTopic);
+                } else {
+                    unindexed.add(input);
                 }
-                unindexed.add(input);
             }
 
             Object[] unindexedArgs = event.decode(eventLog.getData(), unindexed.toArray(new Param[unindexed.size()]));

@@ -21,9 +21,9 @@ import org.ethereum.core.Block;
 import org.ethereum.util.RLP;
 import org.ethereum.util.RLPList;
 
-import org.spongycastle.util.encoders.Hex;
-
 import java.math.BigInteger;
+
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Wrapper around an Ethereum Blocks message on the network
@@ -55,10 +55,9 @@ public class NewBlockMessage extends EthMessage {
 
     private synchronized void parse() {
         if (parsed) return;
-        RLPList paramsList = (RLPList) RLP.decode2(encoded).get(0);
+        RLPList paramsList = RLP.unwrapList(encoded);
 
-        RLPList blockRLP = ((RLPList) paramsList.get(0));
-        block = new Block(blockRLP.getRLPData());
+        block = new Block(paramsList.get(0).getRLPData());
         difficulty = paramsList.get(1).getRLPData();
 
         parsed = true;
@@ -98,6 +97,6 @@ public class NewBlockMessage extends EthMessage {
 
         String hash = this.getBlock().getShortHash();
         long number = this.getBlock().getNumber();
-        return "NEW_BLOCK [ number: " + number + " hash:" + hash + " difficulty: " + Hex.toHexString(difficulty) + " ]";
+        return "NEW_BLOCK [ number: " + number + " hash:" + hash + " difficulty: " + toHexString(difficulty) + " ]";
     }
 }

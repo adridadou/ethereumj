@@ -27,17 +27,18 @@ import org.ethereum.listener.EthereumListener;
 import org.ethereum.listener.EthereumListenerAdapter;
 import org.ethereum.util.ByteArraySet;
 import org.ethereum.vm.*;
+import org.ethereum.vm.hook.VMHook;
 import org.ethereum.vm.program.Program;
 import org.ethereum.vm.program.ProgramResult;
 import org.ethereum.vm.program.invoke.ProgramInvoke;
 import org.ethereum.vm.program.invoke.ProgramInvokeFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.util.encoders.Hex;
 
 import java.math.BigInteger;
 import java.util.List;
 
+import static java.util.Objects.isNull;
 import static org.apache.commons.lang3.ArrayUtils.getLength;
 import static org.apache.commons.lang3.ArrayUtils.isEmpty;
 import static org.ethereum.util.BIUtil.*;
@@ -88,16 +89,23 @@ public class TransactionExecutor {
     private ByteArraySet touchedAccounts = new ByteArraySet();
 
     boolean localCall = false;
+    private final VMHook vmHook;
 
     public TransactionExecutor(Transaction tx, byte[] coinbase, Repository track, BlockStore blockStore,
                                ProgramInvokeFactory programInvokeFactory, Block currentBlock) {
 
-        this(tx, coinbase, track, blockStore, programInvokeFactory, currentBlock, new EthereumListenerAdapter(), 0);
+        this(tx, coinbase, track, blockStore, programInvokeFactory, currentBlock, new EthereumListenerAdapter(), 0, VMHook.EMPTY);
     }
 
     public TransactionExecutor(Transaction tx, byte[] coinbase, Repository track, BlockStore blockStore,
                                ProgramInvokeFactory programInvokeFactory, Block currentBlock,
                                EthereumListener listener, long gasUsedInTheBlock) {
+        this(tx, coinbase,track, blockStore, programInvokeFactory, currentBlock, listener, gasUsedInTheBlock, VMHook.EMPTY);
+    }
+
+    public TransactionExecutor(Transaction tx, byte[] coinbase, Repository track, BlockStore blockStore,
+                               ProgramInvokeFactory programInvokeFactory, Block currentBlock,
+                               EthereumListener listener, long gasUsedInTheBlock, VMHook vmHook) {
 
         this.tx = tx;
         this.coinbase = coinbase;
@@ -109,6 +117,8 @@ public class TransactionExecutor {
         this.listener = listener;
         this.gasUsedInTheBlock = gasUsedInTheBlock;
         this.m_endGas = toBI(tx.getGasLimit());
+        this.vmHook = isNull(vmHook) ? VMHook.EMPTY : vmHook;
+
         withCommonConfig(CommonConfig.getDefault());
     }
 
@@ -208,7 +218,7 @@ public class TransactionExecutor {
         if (!readyToExecute) return;
 
         byte[] targetAddress = tx.getReceiveAddress();
-        precompiledContract = PrecompiledContracts.getContractForAddress(new DataWord(targetAddress), blockchainConfig);
+        precompiledContract = PrecompiledContracts.getContractForAddress(DataWord.of(targetAddress), blockchainConfig);
 
         if (precompiledContract != null) {
             long requiredGas = precompiledContract.getGasForData(tx.getData());
@@ -218,7 +228,7 @@ public class TransactionExecutor {
             if (!localCall && m_endGas.compareTo(spendingGas) < 0) {
                 // no refund
                 // no endowment
-                execError("Out of Gas calling precompiled contract 0x" + Hex.toHexString(targetAddress) +
+                execError("Out of Gas calling precompiled contract 0x" + toHexString(targetAddress) +
                         ", required: " + spendingGas + ", left: " + m_endGas);
                 m_endGas = BigInteger.ZERO;
                 return;
@@ -230,7 +240,7 @@ public class TransactionExecutor {
                 Pair<Boolean, byte[]> out = precompiledContract.execute(tx.getData());
 
                 if (!out.getLeft()) {
-                    execError("Error executing precompiled contract 0x" + Hex.toHexString(targetAddress));
+                    execError("Error executing precompiled contract 0x" + toHexString(targetAddress));
                     m_endGas = BigInteger.ZERO;
                     return;
                 }
@@ -244,10 +254,10 @@ public class TransactionExecutor {
                 result.spendGas(basicTxCost);
             } else {
                 ProgramInvoke programInvoke =
-                        programInvokeFactory.createProgramInvoke(tx, currentBlock, cacheTrack, blockStore);
+                        programInvokeFactory.createProgramInvoke(tx, currentBlock, cacheTrack, track, blockStore);
 
-                this.vm = new VM(config);
-                this.program = new Program(track.getCodeHash(targetAddress), code, programInvoke, tx, config).withCommonConfig(commonConfig);
+                this.vm = new VM(config, vmHook);
+                this.program = new Program(track.getCodeHash(targetAddress), code, programInvoke, tx, config, vmHook).withCommonConfig(commonConfig);
             }
         }
 
@@ -262,7 +272,7 @@ public class TransactionExecutor {
 
         AccountState existingAddr = cacheTrack.getAccountState(newContractAddress);
         if (existingAddr != null && existingAddr.isContractExist(blockchainConfig)) {
-            execError("Trying to create a contract with existing contract address: 0x" + Hex.toHexString(newContractAddress));
+            execError("Trying to create a contract with existing contract address: 0x" + toHexString(newContractAddress));
             m_endGas = BigInteger.ZERO;
             return;
         }
@@ -279,18 +289,24 @@ public class TransactionExecutor {
             m_endGas = m_endGas.subtract(BigInteger.valueOf(basicTxCost));
             result.spendGas(basicTxCost);
         } else {
-            ProgramInvoke programInvoke = programInvokeFactory.createProgramInvoke(tx, currentBlock, cacheTrack, blockStore);
+            Repository originalRepo = track;
+            // Some TCK tests have storage only addresses (no code, zero nonce etc) - impossible situation in the real network
+            // So, we should clean up it before reuse, but as tx not always goes successful, state should be correctly
+            // reverted in that case too
+            if (cacheTrack.hasContractDetails(newContractAddress)) {
+                originalRepo = track.clone();
+                originalRepo.delete(newContractAddress);
+            }
+            ProgramInvoke programInvoke = programInvokeFactory.createProgramInvoke(tx, currentBlock,
+                    cacheTrack, originalRepo, blockStore);
 
-            this.vm = new VM(config);
-            this.program = new Program(tx.getData(), programInvoke, tx, config).withCommonConfig(commonConfig);
+            this.vm = new VM(config, vmHook);
+            this.program = new Program(tx.getData(), programInvoke, tx, config, vmHook).withCommonConfig(commonConfig);
 
             // reset storage if the contract with the same address already exists
             // TCK test case only - normally this is near-impossible situation in the real network
-            // TODO make via Trie.clear() without keyset
-//            ContractDetails contractDetails = program.getStorage().getContractDetails(newContractAddress);
-//            for (DataWord key : contractDetails.getStorageKeys()) {
-//                program.storageSave(key, DataWord.ZERO);
-//            }
+            ContractDetails contractDetails = program.getStorage().getContractDetails(newContractAddress);
+            contractDetails.deleteStorage();
         }
 
         BigInteger endowment = toBI(tx.getValue());
@@ -397,7 +413,7 @@ public class TransactionExecutor {
             // Accumulate refunds for suicides
             result.addFutureRefund(result.getDeleteAccounts().size() * config.getBlockchainConfig().
                     getConfigForBlock(currentBlock.getNumber()).getGasCost().getSUICIDE_REFUND());
-            long gasRefund = Math.min(result.getFutureRefund(), getGasUsed() / 2);
+            long gasRefund = Math.min(Math.max(0, result.getFutureRefund()), getGasUsed() / 2);
             byte[] addr = tx.isContractCreation() ? tx.getContractAddress() : tx.getReceiveAddress();
             m_endGas = m_endGas.add(BigInteger.valueOf(gasRefund));
 
@@ -426,12 +442,12 @@ public class TransactionExecutor {
 
         // Refund for gas leftover
         track.addBalance(tx.getSender(), summary.getLeftover().add(summary.getRefund()));
-        logger.info("Pay total refund to sender: [{}], refund val: [{}]", Hex.toHexString(tx.getSender()), summary.getRefund());
+        logger.info("Pay total refund to sender: [{}], refund val: [{}]", toHexString(tx.getSender()), summary.getRefund());
 
         // Transfer fees to miner
         track.addBalance(coinbase, summary.getFee());
         touchedAccounts.add(coinbase);
-        logger.info("Pay fees to miner: [{}], feesEarned: [{}]", Hex.toHexString(coinbase), summary.getFee());
+        logger.info("Pay fees to miner: [{}], feesEarned: [{}]", toHexString(coinbase), summary.getFee());
 
         if (result != null) {
             logs = result.getLogInfoList();

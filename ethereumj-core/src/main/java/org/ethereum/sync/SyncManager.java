@@ -27,14 +27,15 @@ import org.ethereum.net.server.Channel;
 import org.ethereum.net.server.ChannelManager;
 import org.ethereum.util.ExecutorPipeline;
 import org.ethereum.validator.BlockHeaderValidator;
+import org.ethereum.validator.DependentBlockHeaderRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.util.encoders.Hex;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -48,6 +49,7 @@ import static java.lang.Math.max;
 import static java.util.Collections.singletonList;
 import static org.ethereum.core.ImportResult.*;
 import static org.ethereum.util.Utils.longToTimePeriod;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * @author Mikhail Kalinin
@@ -90,6 +92,9 @@ public class SyncManager extends BlockDownloader {
     @Autowired
     private FastSyncManager fastSyncManager;
 
+    @Autowired
+    private DependentBlockHeaderRule parentHeaderValidator;
+
     ChannelManager channelManager;
 
     private SystemProperties config;
@@ -107,6 +112,7 @@ public class SyncManager extends BlockDownloader {
     private long importStart;
     private EthereumListener.SyncState syncDoneType = EthereumListener.SyncState.COMPLETE;
     private ScheduledExecutorService logExecutor = Executors.newSingleThreadScheduledExecutor();
+    private LocalDateTime initRegularTime;
 
     private AtomicInteger blocksInMem = new AtomicInteger(0);
 
@@ -159,13 +165,38 @@ public class SyncManager extends BlockDownloader {
         logger.info("Initializing SyncManager regular sync.");
         this.syncDoneType = syncDoneType;
 
-        syncQueue = new SyncQueueImpl(blockchain);
+        syncQueue = new SyncQueueImpl(blockchain)
+                .withParentHeaderValidator(parentHeaderValidator);
         super.init(syncQueue, pool, "RegularSync");
 
         Runnable queueProducer = this::produceQueue;
 
         syncQueueThread = new Thread (queueProducer, "SyncQueueThread");
         syncQueueThread.start();
+
+        if (config.makeDoneByTimeout() >= 0) {
+            logger.info("Custom long sync done timeout set to {} second(s)", config.makeDoneByTimeout());
+            this.initRegularTime = LocalDateTime.now();
+            ScheduledExecutorService shortSyncAwait = Executors.newSingleThreadScheduledExecutor();
+            shortSyncAwait.scheduleAtFixedRate(() -> {
+                try {
+                    if (LocalDateTime.now().minusSeconds(config.makeDoneByTimeout()).isAfter(initRegularTime) &&
+                            getLastKnownBlockNumber() == blockchain.getBestBlock().getNumber()) {
+                        logger.info("Sync done triggered by timeout");
+                        makeSyncDone();
+                        shortSyncAwait.shutdown();
+                    } else if (syncDone) {
+                        shortSyncAwait.shutdown();
+                    }
+                } catch (Exception e) {
+                    logger.error("Unexpected", e);
+                }
+            }, 0, 2, TimeUnit.SECONDS);
+        }
+    }
+
+    void setSyncDoneType(EthereumListener.SyncState syncDoneType) {
+        this.syncDoneType = syncDoneType;
     }
 
     public SyncStatus getSyncStatus() {
@@ -274,9 +305,7 @@ public class SyncManager extends BlockDownloader {
                             wrapper.getBlock().getTransactionsList().size(), ts);
 
                     if (wrapper.isNewBlock() && !syncDone) {
-                        syncDone = true;
-                        channelManager.onSyncDone(true);
-                        compositeEthereumListener.onSyncDone(syncDoneType);
+                        makeSyncDone();
                     }
                 }
 
@@ -286,7 +315,7 @@ public class SyncManager extends BlockDownloader {
                             wrapper.getBlock().getTransactionsList().size(), ts);
 
                 if (syncDone && (importResult == IMPORTED_BEST || importResult == IMPORTED_NOT_BEST)) {
-                    if (logger.isDebugEnabled()) logger.debug("Block dump: " + Hex.toHexString(wrapper.getBlock().getEncoded()));
+                    if (logger.isDebugEnabled()) logger.debug("Block dump: " + toHexString(wrapper.getBlock().getEncoded()));
                     // Propagate block to the net after successful import asynchronously
                     if (wrapper.isNewBlock()) channelManager.onNewForeignBlock(wrapper);
                 }
@@ -303,12 +332,40 @@ public class SyncManager extends BlockDownloader {
             } catch (Throwable e) {
                 if (wrapper != null) {
                     logger.error("Error processing block {}: ", wrapper.getBlock().getShortDescr(), e);
-                    logger.error("Block dump: {}", Hex.toHexString(wrapper.getBlock().getEncoded()));
+                    logger.error("Block dump: {}", toHexString(wrapper.getBlock().getEncoded()));
                 } else {
                     logger.error("Error processing unknown block", e);
                 }
             }
         }
+    }
+
+    private synchronized void makeSyncDone() {
+        if (syncDone) return;
+        syncDone = true;
+        channelManager.onSyncDone(true);
+        compositeEthereumListener.onSyncDone(syncDoneType);
+    }
+
+    public CompletableFuture<Void> switchToShortSync() {
+        final CompletableFuture<Void> syncDoneF = new CompletableFuture<>();
+        if(!syncDone && config.isSyncEnabled()) {
+            new Thread(() -> {
+                while(!blockQueue.isEmpty() && !syncDone) {
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        syncDoneF.completeExceptionally(e);
+                    }
+                }
+                makeSyncDone();
+                syncDoneF.complete(null);
+            }).start();
+        } else {
+            syncDoneF.complete(null);
+        }
+
+        return syncDoneF;
     }
 
     /**
@@ -335,9 +392,15 @@ public class SyncManager extends BlockDownloader {
         if (block.getNumber() > syncQueue.maxNum + MAX_IN_REQUEST * 2) {
             return true;
         }
+        // skip if memory limit is already hit
+        if ((blocksInMem.get() * getEstimatedBlockSize()) > blockBytesLimit) {
+            return true;
+        }
 
         logger.debug("Adding new block to sync queue: " + block.getShortDescr());
-        syncQueue.addHeaders(singletonList(new BlockHeaderWrapper(block.getHeader(), nodeId)));
+        SyncQueueIfc.ValidatedHeaders res = syncQueue.addHeadersAndValidate(
+                singletonList(new BlockHeaderWrapper(block.getHeader(), nodeId)));
+        dropIfValidationFailed(res);
 
         synchronized (this) {
             List<Block> newBlocks = syncQueue.addBlocks(singletonList(block));

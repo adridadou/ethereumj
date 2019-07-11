@@ -20,8 +20,10 @@ package org.ethereum.sync;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import org.apache.commons.collections4.queue.CircularFifoQueue;
 import org.ethereum.core.*;
+import org.ethereum.crypto.HashUtil;
 import org.ethereum.net.server.Channel;
 import org.ethereum.validator.BlockHeaderValidator;
 import org.slf4j.Logger;
@@ -34,6 +36,7 @@ import java.util.concurrent.*;
 import static java.lang.Math.max;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Created by Anton Nashatyrev on 27.10.2016.
@@ -178,7 +181,7 @@ public abstract class BlockDownloader {
                             logger.debug("{} headerRetrieveLoop: No IDLE peers found", name);
                             break;
                         } else {
-                            logger.debug("{} headerRetrieveLoop: request headers (" + headersRequest.getStart() + ") from " + any.getNode(), name);
+                            logger.debug("{} headerRetrieveLoop: request headers (" + headersRequest.toString() + ") from " + any.getNode(), name);
                             ListenableFuture<List<BlockHeader>> futureHeaders = headersRequest.getHash() == null ?
                                     any.getEthHandler().sendGetBlockHeaders(headersRequest.getStart(), headersRequest.getCount(), headersRequest.isReverse()) :
                                     any.getEthHandler().sendGetBlockHeaders(headersRequest.getHash(), headersRequest.getCount(), headersRequest.getStep(), headersRequest.isReverse());
@@ -196,7 +199,7 @@ public abstract class BlockDownloader {
                                         logger.debug("{}: Error receiving headers. Dropping the peer.", name, t);
                                         any.getEthHandler().dropConnection();
                                     }
-                                });
+                                }, MoreExecutors.directExecutor());
                                 it.remove();
                                 reqHeadersCounter++;
                             }
@@ -252,6 +255,7 @@ public abstract class BlockDownloader {
                 if (blocksToAsk >= MAX_IN_REQUEST) {
 //                    SyncQueueIfc.BlocksRequest bReq = syncQueue.requestBlocks(maxBlocks);
 
+                    boolean fewHeadersReqMode = false;
                     if (bReqs.size() == 1 && bReqs.get(0).getBlockHeaders().size() <= 3) {
                         // new blocks are better to request from the header senders first
                         // to get more chances to receive block body promptly
@@ -261,7 +265,9 @@ public abstract class BlockDownloader {
                                 ListenableFuture<List<Block>> futureBlocks =
                                         channel.getEthHandler().sendGetBlockBodies(singletonList(blockHeaderWrapper));
                                 if (futureBlocks != null) {
-                                    Futures.addCallback(futureBlocks, new BlocksCallback(channel));
+                                    Futures.addCallback(futureBlocks, new BlocksCallback(channel),
+                                            MoreExecutors.directExecutor());
+                                    fewHeadersReqMode = true;
                                 }
                             }
                         }
@@ -285,18 +291,27 @@ public abstract class BlockDownloader {
                                     any.getEthHandler().sendGetBlockBodies(blocksRequest.getBlockHeaders());
                             blocksRequested += blocksRequest.getBlockHeaders().size();
                             if (futureBlocks != null) {
-                                Futures.addCallback(futureBlocks, new BlocksCallback(any));
+                                Futures.addCallback(futureBlocks, new BlocksCallback(any),
+                                        MoreExecutors.directExecutor());
                                 reqBlocksCounter++;
                                 it.remove();
                             }
                         }
                     }
+
+                    // Case when we have requested few headers and was not able
+                    // to remove request from the list in above cycle because
+                    // there were no idle peers or whatever
+                    if (fewHeadersReqMode && !bReqs.isEmpty()) {
+                        bReqs.clear();
+                    }
+
                     receivedBlocksLatch = new CountDownLatch(max(reqBlocksCounter - 2, 1));
+                    receivedBlocksLatch.await(1000, TimeUnit.MILLISECONDS);
                 } else {
                     logger.debug("{} blockRetrieveLoop: BlockQueue is full", name);
-                    receivedBlocksLatch = new CountDownLatch(1);
+                    Thread.sleep(200);
                 }
-                receivedBlocksLatch.await(200, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 break;
             } catch (Exception e) {
@@ -366,7 +381,7 @@ public abstract class BlockDownloader {
             if (!isValid(header)) {
 
                 if (logger.isDebugEnabled()) {
-                    logger.debug("{}: Invalid header RLP: {}", Hex.toHexString(header.getEncoded()), name);
+                    logger.debug("{}: Invalid header RLP: {}", toHexString(header.getEncoded()), name);
                 }
 
                 return false;
@@ -375,18 +390,39 @@ public abstract class BlockDownloader {
             wrappers.add(new BlockHeaderWrapper(header, nodeId));
         }
 
+        SyncQueueIfc.ValidatedHeaders res;
         synchronized (this) {
-            List<BlockHeaderWrapper> headersReady = syncQueue.addHeaders(wrappers);
-            if (headersReady != null && !headersReady.isEmpty()) {
-                pushHeaders(headersReady);
+            res = syncQueue.addHeadersAndValidate(wrappers);
+            if (res.isValid() && !res.getHeaders().isEmpty()) {
+                pushHeaders(res.getHeaders());
             }
         }
+
+        dropIfValidationFailed(res);
 
         receivedHeadersLatch.countDown();
 
         logger.debug("{}: {} headers added", name, headers.size());
 
         return true;
+    }
+
+    /**
+     * Checks whether validation has been passed correctly or not
+     * and drops misleading peer if it hasn't
+     */
+    protected void dropIfValidationFailed(SyncQueueIfc.ValidatedHeaders res) {
+        if (!res.isValid() && res.getNodeId() != null) {
+            if (logger.isWarnEnabled()) logger.warn("Invalid header received: {}, reason: {}, peer: {}",
+                    res.getHeader() == null ? "" : res.getHeader().getShortDescr(),
+                    res.getReason(),
+                    Hex.toHexString(res.getNodeId()).substring(0, 8));
+
+            Channel peer = pool.getByNodeId(res.getNodeId());
+            if (peer != null) {
+                peer.dropConnection();
+            }
+        }
     }
 
     /**

@@ -17,9 +17,15 @@
  */
 package org.ethereum.util.blockchain;
 
+import org.ethereum.config.BlockchainConfig;
 import org.ethereum.config.BlockchainNetConfig;
 import org.ethereum.config.SystemProperties;
+import org.ethereum.config.blockchain.ByzantiumConfig;
+import org.ethereum.config.blockchain.DaoHFConfig;
+import org.ethereum.config.blockchain.DaoNoHFConfig;
 import org.ethereum.config.blockchain.FrontierConfig;
+import org.ethereum.config.blockchain.HomesteadConfig;
+import org.ethereum.config.blockchain.PetersburgConfig;
 import org.ethereum.core.*;
 import org.ethereum.core.genesis.GenesisLoader;
 import org.ethereum.crypto.ECKey;
@@ -42,6 +48,7 @@ import org.ethereum.util.FastByteComparisons;
 import org.ethereum.validator.DependentBlockHeaderRuleAdapter;
 import org.ethereum.vm.DataWord;
 import org.ethereum.vm.LogInfo;
+import org.ethereum.vm.hook.VMHook;
 import org.ethereum.vm.program.invoke.ProgramInvokeFactoryImpl;
 import org.iq80.leveldb.DBException;
 import org.spongycastle.util.encoders.Hex;
@@ -82,6 +89,7 @@ public class StandaloneBlockchain implements LocalBlockchain {
     PruneManager pruneManager;
 
     private BlockSummary lastSummary;
+    private VMHook vmHook = VMHook.EMPTY;
 
     class PendingTx {
         ECKey sender;
@@ -190,6 +198,11 @@ public class StandaloneBlockchain implements LocalBlockchain {
 
     public StandaloneBlockchain withDbDelay(long dbDelay) {
         this.dbDelay = dbDelay;
+        return this;
+    }
+
+    public StandaloneBlockchain withVmHook(VMHook vmHook) {
+        this.vmHook = vmHook;
         return this;
     }
 
@@ -352,8 +365,8 @@ public class StandaloneBlockchain implements LocalBlockchain {
 
     @Override
 	public SolidityContract submitNewContract(ContractMetadata contractMetaData, Object... constructorArgs) {
-		SolidityContractImpl contract = new SolidityContractImpl(contractMetaData);
-		return submitNewContract(contract, constructorArgs);
+		SolidityContractImpl contract = createContract(contractMetaData);
+        return submitNewContract(contract, constructorArgs);
 	}
 
 	private SolidityContract submitNewContract(SolidityContractImpl contract, Object... constructorArgs) {
@@ -394,7 +407,7 @@ public class StandaloneBlockchain implements LocalBlockchain {
 	 */
 	private SolidityContractImpl createContract(String contractName, CompilationResult result) {
 		ContractMetadata cMetaData = result.getContract(contractName);
-		SolidityContractImpl contract = createContract(cMetaData);
+		SolidityContractImpl contract = new SolidityContractImpl(cMetaData);
 
 		for (CompilationResult.ContractMetadata metadata : result.getContracts()) {
 		    contract.addRelatedContract(metadata.abi);
@@ -404,6 +417,7 @@ public class StandaloneBlockchain implements LocalBlockchain {
 
 	private SolidityContractImpl createContract(ContractMetadata contractData) {
 		SolidityContractImpl contract = new SolidityContractImpl(contractData);
+        contract.addRelatedContract(contractData.abi);
 		return contract;
 	}
 
@@ -484,7 +498,8 @@ public class StandaloneBlockchain implements LocalBlockchain {
 
         BlockchainImpl blockchain = new BlockchainImpl(blockStore, repository)
                 .withEthereumListener(listener)
-                .withSyncManager(new SyncManager());
+                .withSyncManager(new SyncManager())
+                .withVmHook(vmHook);
         blockchain.setParentHeaderValidator(new DependentBlockHeaderRuleAdapter());
         blockchain.setProgramInvokeFactory(programInvokeFactory);
         blockchain.setPruneManager(pruneManager);
@@ -500,10 +515,10 @@ public class StandaloneBlockchain implements LocalBlockchain {
 
         repository.commit();
 
-        blockStore.saveBlock(genesis, genesis.getCumulativeDifficulty(), true);
+        blockStore.saveBlock(genesis, genesis.getDifficultyBI(), true);
 
         blockchain.setBestBlock(genesis);
-        blockchain.setTotalDifficulty(genesis.getCumulativeDifficulty());
+        blockchain.setTotalDifficulty(genesis.getDifficultyBI());
 
         pruneManager.blockCommitted(genesis.getHeader());
 
@@ -567,11 +582,11 @@ public class StandaloneBlockchain implements LocalBlockchain {
         }
 
         @Override
-        public SolidityCallResult callFunction(long value, String functionName, Object... args) {
+        public SolidityCallResult callFunction(BigInteger value, String functionName, Object... args) {
             CallTransaction.Function function = contract.getByName(functionName);
             byte[] data = function.encode(convertArgs(args));
             SolidityCallResult res = new SolidityCallResultImpl(this, function);
-            submitNewTx(new PendingTx(null, BigInteger.valueOf(value), data, null, this, res));
+            submitNewTx(new PendingTx(null, value, data, null, this, res));
             return res;
         }
 
@@ -587,7 +602,7 @@ public class StandaloneBlockchain implements LocalBlockchain {
             if (func == null) throw new RuntimeException("No function with name '" + functionName + "'");
             Transaction tx = CallTransaction.createCallTransaction(0, 0, 100000000000000L,
                     Hex.toHexString(getAddress()), 0, func, convertArgs(args));
-            tx.sign(new byte[32]);
+            tx.sign(ECKey.DUMMY);
 
             Repository repository = getBlockchain().getRepository().getSnapshotTo(callBlock.getStateRoot()).startTracking();
 
@@ -668,7 +683,10 @@ public class StandaloneBlockchain implements LocalBlockchain {
             for (LogInfo logInfo : getReceipt().getLogInfoList()) {
                 for (CallTransaction.Contract c : contract.relatedContracts) {
                     CallTransaction.Invocation event = c.parseEvent(logInfo);
-                    if (event != null) ret.add(event);
+                    if (event != null) {
+                        ret.add(event);
+                        break;
+                    }
                 }
             }
             return ret;
@@ -701,12 +719,12 @@ public class StandaloneBlockchain implements LocalBlockchain {
 
         @Override
         public byte[] getStorageSlot(long slot) {
-            return getStorageSlot(new DataWord(slot).getData());
+            return getStorageSlot(DataWord.of(slot).getData());
         }
 
         @Override
         public byte[] getStorageSlot(byte[] slot) {
-            DataWord ret = getBlockchain().getRepository().getContractDetails(contractAddr).get(new DataWord(slot));
+            DataWord ret = getBlockchain().getRepository().getContractDetails(contractAddr).get(DataWord.of(slot));
             return ret.getData();
         }
     }
@@ -748,12 +766,12 @@ public class StandaloneBlockchain implements LocalBlockchain {
     }
 
     // Override blockchain net config for fast mining
-    public static FrontierConfig getEasyMiningConfig() {
-        return new FrontierConfig(new FrontierConfig.FrontierConstants() {
+    public static PetersburgConfig getEasyMiningConfig() {
+        return new PetersburgConfig(new DaoNoHFConfig(new HomesteadConfig(new HomesteadConfig.HomesteadConstants() {
             @Override
             public BigInteger getMINIMUM_DIFFICULTY() {
                 return BigInteger.ONE;
             }
-        });
+        }), 0));
     }
 }

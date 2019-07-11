@@ -25,12 +25,11 @@ import org.ethereum.util.RLPElement;
 import org.ethereum.util.RLPItem;
 import org.ethereum.util.RLPList;
 
-import org.spongycastle.util.encoders.Hex;
-
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.ethereum.datasource.MemSizeEstimator.ByteArrayEstimator;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * @author Roman Mandeleil
@@ -56,7 +55,7 @@ public class LogInfo {
 
         for (RLPElement topic1 : topics) {
             byte[] topic = topic1.getRLPData();
-            this.topics.add(new DataWord(topic));
+            this.topics.add(DataWord.of(topic));
         }
     }
 
@@ -114,16 +113,16 @@ public class LogInfo {
         topicsStr.append("[");
 
         for (DataWord topic : topics) {
-            String topicStr = Hex.toHexString(topic.getData());
+            String topicStr = toHexString(topic.getData());
             topicsStr.append(topicStr).append(" ");
         }
         topicsStr.append("]");
 
 
         return "LogInfo{" +
-                "address=" + Hex.toHexString(address) +
+                "address=" + toHexString(address) +
                 ", topics=" + topicsStr +
-                ", data=" + Hex.toHexString(data) +
+                ", data=" + toHexString(data) +
                 '}';
     }
 

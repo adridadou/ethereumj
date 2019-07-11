@@ -29,7 +29,7 @@ import org.spongycastle.crypto.KeyEncoder;
 import org.spongycastle.crypto.KeyGenerationParameters;
 import org.spongycastle.crypto.agreement.ECDHBasicAgreement;
 import org.spongycastle.crypto.digests.SHA256Digest;
-import org.spongycastle.crypto.engines.AESFastEngine;
+import org.spongycastle.crypto.engines.AESEngine;
 import org.spongycastle.crypto.engines.IESEngine;
 import org.spongycastle.crypto.generators.ECKeyPairGenerator;
 import org.spongycastle.crypto.generators.EphemeralKeyPairGenerator;
@@ -45,6 +45,7 @@ import java.math.BigInteger;
 import java.security.SecureRandom;
 
 import static org.ethereum.crypto.HashUtil.sha3;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
 public class CryptoTest {
@@ -152,7 +153,7 @@ public class CryptoTest {
         KeyParameter key = new KeyParameter(keyBytes);
         ParametersWithIV params = new ParametersWithIV(key, new byte[16]);
 
-        AESFastEngine engine = new AESFastEngine();
+        AESEngine engine = new AESEngine();
         SICBlockCipher ctrEngine = new SICBlockCipher(engine);
 
         ctrEngine.init(true, params);
@@ -174,7 +175,7 @@ public class CryptoTest {
     @Test  // big packet encryption
     public void test12() throws Throwable {
 
-        AESFastEngine engine = new AESFastEngine();
+        AESEngine engine = new AESEngine();
         SICBlockCipher ctrEngine = new SICBlockCipher(engine);
 
         byte[] keyBytes = Hex.decode("a4627abc2a3c25315bff732cb22bc128f203912dd2a840f31e66efb27a47d2b1");
@@ -237,7 +238,7 @@ public class CryptoTest {
     @Test  // ECIES_AES128_SHA256 + No Ephemeral Key + IV(all zeroes)
     public void test14() throws Throwable{
 
-        AESFastEngine aesFastEngine = new AESFastEngine();
+        AESEngine aesFastEngine = new AESEngine();
 
         IESEngine iesEngine = new IESEngine(
                 new ECDHBasicAgreement(),
@@ -307,7 +308,7 @@ public class CryptoTest {
         AsymmetricCipherKeyPair myKey = new AsymmetricCipherKeyPair(ecPubKey, ecPrivKey);
 
 
-        AESFastEngine aesFastEngine = new AESFastEngine();
+        AESEngine aesFastEngine = new AESEngine();
 
         IESEngine iesEngine = new IESEngine(
                 new ECDHBasicAgreement(),
@@ -364,6 +365,16 @@ public class CryptoTest {
         byte[] orig = decryptorIES_Engine.processBlock(cipher, 0, cipher.length);
 
         log.info("orig: " + Hex.toHexString(orig));
+    }
+
+    @Test
+    public void calcSaltAddrTest() {
+        byte[] from = Hex.decode("0123456789012345678901234567890123456789");
+        byte[] salt = Hex.decode("0000000000000000000000000000000000000000000000000000000000000314");
+        // contract Demo{}
+        byte[] code = Hex.decode("6080604052348015600f57600080fd5b50603580601d6000396000f3006080604052600080fd00a165627a7a72305820a63607f79a5e21cdaf424583b9686f2aa44059d70183eb9846ccfa086405716e0029");
+
+        assertArrayEquals(Hex.decode("d26e42c8a0511c19757f783402231cf82b2bdf59"), HashUtil.calcSaltAddr(from, code, salt));
     }
 
 }

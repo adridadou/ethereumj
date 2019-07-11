@@ -78,6 +78,11 @@ public class IterableTestRepository implements Repository {
     }
 
     @Override
+    public Repository clone() {
+        return new IterableTestRepository(src.clone(), this);
+    }
+
+    @Override
     public AccountState createAccount(byte[] addr) {
         addAccount(addr);
         return src.createAccount(addr);
@@ -346,6 +351,14 @@ public class IterableTestRepository implements Repository {
         @Override
         public Set<DataWord> getStorageKeys() {
             return getStorage().keySet();
+        }
+
+        @Override
+        public void deleteStorage() {
+            Set<DataWord> keys = getStorageKeys();
+            for (DataWord key: keys) {
+                put(key, DataWord.ZERO);
+            }
         }
 
         @Override

@@ -22,7 +22,6 @@ import org.ethereum.util.ByteUtil;
 import org.ethereum.util.RLP;
 import org.ethereum.util.RLPItem;
 import org.ethereum.util.RLPList;
-import org.spongycastle.util.encoders.Hex;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,7 +44,7 @@ public class NeighborsMessage extends Message {
 
         for (int i = 0; i < nodesRLP.size(); ++i) {
             RLPList nodeRLP = (RLPList) nodesRLP.get(i);
-            Node node = new Node(nodeRLP.getRLPData());
+            Node node = new Node(nodeRLP);
             nodes.add(node);
         }
         this.expires = ByteUtil.byteArrayToLong(expires.getRLPData());

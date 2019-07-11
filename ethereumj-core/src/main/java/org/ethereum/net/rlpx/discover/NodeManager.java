@@ -117,7 +117,7 @@ public class NodeManager implements Consumer<DiscoveryEvent>{
         return pongTimer;
     }
 
-    void setBootNodes(List<Node> bootNodes) {
+    public void setBootNodes(List<Node> bootNodes) {
         this.bootNodes = bootNodes;
     }
 
@@ -238,6 +238,16 @@ public class NodeManager implements Consumer<DiscoveryEvent>{
 
     public NodeStatistics getNodeStatistics(Node n) {
         return getNodeHandler(n).getNodeStatistics();
+    }
+
+    /**
+     * Checks whether peers with such InetSocketAddress has penalize disconnect record
+     * @param addr  Peer address
+     * @return true if penalized, false if not or no records
+     */
+    public boolean isReputationPenalized(InetSocketAddress addr) {
+        return getNodeStatistics(new Node(new byte[0], addr.getHostString(),
+                addr.getPort())).isReputationPenalized();
     }
 
     @Override

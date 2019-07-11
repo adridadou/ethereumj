@@ -34,6 +34,7 @@ import org.ethereum.net.rlpx.MessageCodec;
 import org.ethereum.net.rlpx.Node;
 import org.ethereum.util.BuildInfo;
 import org.ethereum.util.ByteUtil;
+import org.ethereum.util.Utils;
 import org.ethereum.validator.BlockCustomHashRule;
 import org.ethereum.validator.BlockHeaderValidator;
 import org.slf4j.Logger;
@@ -51,8 +52,10 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.net.URL;
 import java.util.*;
+import java.util.function.Function;
 
 import static org.ethereum.crypto.HashUtil.sha3;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Utility class to retrieve property values from the ethereumj.conf files
@@ -157,6 +160,8 @@ public class SystemProperties {
 
     private final ClassLoader classLoader;
 
+    private GenerateNodeIdStrategy generateNodeIdStrategy = null;
+
     public SystemProperties() {
         this(ConfigFactory.empty());
     }
@@ -181,8 +186,8 @@ public class SystemProperties {
             Config referenceConfig = ConfigFactory.parseResources("ethereumj.conf");
             logger.info("Config (" + (referenceConfig.entrySet().size() > 0 ? " yes " : " no  ") + "): default properties from resource 'ethereumj.conf'");
             String res = System.getProperty("ethereumj.conf.res");
-            Config cmdLineConfigRes = res != null ? ConfigFactory.parseResources(res) : ConfigFactory.empty();
-            logger.info("Config (" + (cmdLineConfigRes.entrySet().size() > 0 ? " yes " : " no  ") + "): user properties from -Dethereumj.conf.res resource '" + res + "'");
+            Config cmdLineConfigRes = mergeConfigs(res, ConfigFactory::parseResources);
+            logger.info("Config (" + (cmdLineConfigRes.entrySet().size() > 0 ? " yes " : " no  ") + "): user properties from -Dethereumj.conf.res resource(s) '" + res + "'");
             Config userConfig = ConfigFactory.parseResources("user.conf");
             logger.info("Config (" + (userConfig.entrySet().size() > 0 ? " yes " : " no  ") + "): user properties from resource 'user.conf'");
             File userDirFile = new File(System.getProperty("user.dir"), "/config/ethereumj.conf");
@@ -193,8 +198,8 @@ public class SystemProperties {
             Config testUserConfig = ConfigFactory.parseResources("test-user.conf");
             logger.info("Config (" + (testUserConfig.entrySet().size() > 0 ? " yes " : " no  ") + "): test properties from resource 'test-user.conf'");
             String file = System.getProperty("ethereumj.conf.file");
-            Config cmdLineConfigFile = file != null ? ConfigFactory.parseFile(new File(file)) : ConfigFactory.empty();
-            logger.info("Config (" + (cmdLineConfigFile.entrySet().size() > 0 ? " yes " : " no  ") + "): user properties from -Dethereumj.conf.file file '" + file + "'");
+            Config cmdLineConfigFile = mergeConfigs(file, s -> ConfigFactory.parseFile(new File(s)));
+            logger.info("Config (" + (cmdLineConfigFile.entrySet().size() > 0 ? " yes " : " no  ") + "): user properties from -Dethereumj.conf.file file(s) '" + file + "'");
             logger.info("Config (" + (apiConfig.entrySet().size() > 0 ? " yes " : " no  ") + "): config passed via constructor");
             config = apiConfig
                     .withFallback(cmdLineConfigFile)
@@ -215,21 +220,24 @@ public class SystemProperties {
             // There could be several files with the same name from other packages,
             // "version.properties" is a very common name
             List<InputStream> iStreams = loadResources("version.properties", this.getClass().getClassLoader());
-            for (InputStream is : iStreams) {
-                Properties props = new Properties();
-                props.load(is);
-                if (props.getProperty("versionNumber") == null || props.getProperty("databaseVersion") == null) {
-                    continue;
-                }
-                this.projectVersion = props.getProperty("versionNumber");
-                this.projectVersion = this.projectVersion.replaceAll("'", "");
+          for (InputStream is : iStreams) {
+            Properties props = new Properties();
+            props.load(is);
+            if (props.getProperty("versionNumber") == null || props.getProperty("databaseVersion") == null) {
+              continue;
+            }
+            this.projectVersion = props.getProperty("versionNumber");
+            this.projectVersion = this.projectVersion.replaceAll("'", "");
 
-                if (this.projectVersion == null) this.projectVersion = "-.-.-";
+            if (this.projectVersion == null) this.projectVersion = "-.-.-";
 
-                this.projectVersionModifier = "master".equals(BuildInfo.buildBranch) ? "RELEASE" : "SNAPSHOT";
+            this.projectVersionModifier = "master".equals(BuildInfo.buildBranch) ? "RELEASE" : "SNAPSHOT";
 
-                this.databaseVersion = Integer.valueOf(props.getProperty("databaseVersion"));
-                break;
+            this.databaseVersion = Integer.valueOf(props.getProperty("databaseVersion"));
+
+            this.generateNodeIdStrategy = new GetNodeIdFromPropsFile(databaseDir())
+                .withFallback(new GenerateNodeIdRandomly(databaseDir()));
+            break;
             }
         } catch (Exception e) {
             logger.error("Can't read config.", e);
@@ -307,6 +315,27 @@ public class SystemProperties {
                 throw new RuntimeException("Error validating config method: " + method, e);
             }
         }
+    }
+
+    /**
+     * Builds config from the list of config references in string doing following actions:
+     * 1) Splits input by "," to several strings
+     * 2) Uses parserFunc to create config from each string reference
+     * 3) Merges configs, applying them in the same order as in input, so last overrides first
+     * @param input         String with list of config references separated by ",", null or one reference works fine
+     * @param parserFunc    Function to apply to each reference, produces config from it
+     * @return Merged config
+     */
+    protected Config mergeConfigs(String input, Function<String, Config> parserFunc) {
+        Config config = ConfigFactory.empty();
+        if (input != null && !input.isEmpty()) {
+            String[] list = input.split(",");
+            for (int i = list.length - 1; i >= 0; --i) {
+                config = config.withFallback(parserFunc.apply(list[i]));
+            }
+        }
+
+        return config;
     }
 
     public <T> T getProperty(String propName, T defaultValue) {
@@ -664,7 +693,7 @@ public class SystemProperties {
     public String privateKey() {
         if (config.hasPath("peer.privateKey")) {
             String key = config.getString("peer.privateKey");
-            if (key.length() != 64) {
+            if (key.length() != 64 || !Utils.isHexEncoded(key)) {
                 throw new RuntimeException("The peer.privateKey needs to be Hex encoded and 32 byte length");
             }
             return key;
@@ -675,28 +704,7 @@ public class SystemProperties {
 
     private String getGeneratedNodePrivateKey() {
         if (generatedNodePrivateKey == null) {
-            try {
-                File file = new File(databaseDir(), "nodeId.properties");
-                Properties props = new Properties();
-                if (file.canRead()) {
-                    try (Reader r = new FileReader(file)) {
-                        props.load(r);
-                    }
-                } else {
-                    ECKey key = new ECKey();
-                    props.setProperty("nodeIdPrivateKey", Hex.toHexString(key.getPrivKeyBytes()));
-                    props.setProperty("nodeId", Hex.toHexString(key.getNodeId()));
-                    file.getParentFile().mkdirs();
-                    try (Writer w = new FileWriter(file)) {
-                        props.store(w, "Generated NodeID. To use your own nodeId please refer to 'peer.privateKey' config option.");
-                    }
-                    logger.info("New nodeID generated: " + props.getProperty("nodeId"));
-                    logger.info("Generated nodeID and its private key stored in " + file);
-                }
-                generatedNodePrivateKey = props.getProperty("nodeIdPrivateKey");
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
+            generatedNodePrivateKey = generateNodeIdStrategy.getNodePrivateKey();
         }
         return generatedNodePrivateKey;
     }
@@ -740,8 +748,7 @@ public class SystemProperties {
         if (!config.hasPath("peer.discovery.bind.ip") || config.getString("peer.discovery.bind.ip").trim().isEmpty()) {
             if (bindIp == null) {
                 logger.info("Bind address wasn't set, Punching to identify it...");
-                try {
-                    Socket s = new Socket("www.google.com", 80);
+                try (Socket s = new Socket("www.google.com", 80)) {
                     bindIp = s.getLocalAddress().getHostAddress();
                     logger.info("UDP local bound to: {}", bindIp);
                 } catch (IOException e) {
@@ -810,7 +817,7 @@ public class SystemProperties {
     public byte[] getFastSyncPivotBlockHash() {
         if (!config.hasPath("sync.fast.pivotBlockHash")) return null;
         byte[] ret = Hex.decode(config.getString("sync.fast.pivotBlockHash"));
-        if (ret.length != 32) throw new RuntimeException("Invalid block hash length: " + Hex.toHexString(ret));
+        if (ret.length != 32) throw new RuntimeException("Invalid block hash length: " + toHexString(ret));
         return ret;
     }
 
@@ -823,6 +830,12 @@ public class SystemProperties {
     public boolean fastSyncSkipHistory() {
         return config.getBoolean("sync.fast.skipHistory");
     }
+
+    @ValidateMe
+    public int makeDoneByTimeout() {
+        return config.getInt("sync.makeDoneByTimeout");
+    }
+
 
     @ValidateMe
     public boolean isPublicHomeNode() { return config.getBoolean("peer.discovery.public.home.node");}
@@ -907,12 +920,17 @@ public class SystemProperties {
     public String getHash256AlgName() {
         return config.getString("crypto.hash.alg256");
     }
-    
+
     @ValidateMe
     public String getHash512AlgName() {
         return config.getString("crypto.hash.alg512");
     }
-    
+
+    @ValidateMe
+    public String getEthashMode() {
+        return config.getString("sync.ethash");
+    }
+
     private GenesisJson getGenesisJson() {
         if (genesisJson == null) {
             genesisJson = GenesisLoader.loadGenesisJson(this, classLoader);
@@ -963,5 +981,9 @@ public class SystemProperties {
     public boolean githubTestsLoadLocal() {
         return config.hasPath("GitHubTests.testPath") &&
                 !config.getString("GitHubTests.testPath").isEmpty();
+    }
+
+    void setGenerateNodeIdStrategy(GenerateNodeIdStrategy generateNodeIdStrategy) {
+      this.generateNodeIdStrategy = generateNodeIdStrategy;
     }
 }

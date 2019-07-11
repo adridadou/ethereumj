@@ -1,6 +1,5 @@
 # Welcome to ethereumj
 
-[![Slack Status](http://harmony-slack-ether-camp.herokuapp.com/badge.svg)](http://ether.camp) 
 [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/ethereum/ethereumj?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 [![Build Status](https://travis-ci.org/ethereum/ethereumj.svg?branch=master)](https://travis-ci.org/ethereum/ethereumj)
 [![Coverage Status](https://coveralls.io/repos/ethereum/ethereumj/badge.png?branch=master)](https://coveralls.io/r/ethereum/ethereumj?branch=master)
@@ -19,7 +18,7 @@ We keep EthereumJ as thin as possible. For [JSON-RPC](https://github.com/ethereu
    <dependency>
      <groupId>org.ethereum</groupId>
      <artifactId>ethereumj-core</artifactId>
-     <version>1.6.3-RELEASE</version>
+     <version>1.12.0-RELEASE</version>
    </dependency>
 ```
 
@@ -31,7 +30,7 @@ We keep EthereumJ as thin as possible. For [JSON-RPC](https://github.com/ethereu
        jcenter()
        maven { url "https://dl.bintray.com/ethereum/maven/" }
    }
-   compile "org.ethereum:ethereumj-core:1.6.+"
+   implementation "org.ethereum:ethereumj-core:1.9.+"
 ```
 
 As a starting point for your own project take a look at https://github.com/ether-camp/ethereumj.starter
@@ -42,7 +41,7 @@ git clone https://github.com/ethereum/ethereumj
 cd ethereumj
 cp ethereumj-core/src/main/resources/ethereumj.conf ethereumj-core/src/main/resources/user.conf
 vim ethereumj-core/src/main/resources/user.conf # adjust user.conf to your needs
-./gradlew clean shadowJar
+./gradlew clean fatJar
 java -jar ethereumj-core/build/libs/ethereumj-core-*-all.jar
 ```
 
@@ -64,6 +63,27 @@ java -jar ethereumj-core/build/libs/ethereumj-core-*-all.jar
 ./gradlew run -PmainClass=org.ethereum.samples.TransactionBomb
 ```
 
+##### For snapshot builds:
+Please, note, snapshots are not stable and are currently in development! If you still want to try it:
+
+ - Add https://oss.jfrog.org/libs-snapshot/ as a repository to your build script
+ - Add a dependency on `org.ethereum:ethereumj-core:${VERSION}`, where `${VERSION}` is of the form `1.13.0-SNAPSHOT`.
+
+Example:
+
+    <repository>
+        <id>jfrog-snapshots</id>
+        <name>oss.jfrog.org</name>
+        <url>https://oss.jfrog.org/libs-snapshot/</url>
+        <snapshots><enabled>true</enabled></snapshots>
+    </repository>
+    <!-- ... -->
+    <dependency>
+       <groupId>org.ethereum</groupId>
+       <artifactId>ethereumj-core</artifactId>
+       <version>1.13.0-SNAPSHOT</version>
+    </dependency>
+
 ##### Importing project to IntelliJ IDEA: 
 ```
 > git clone https://github.com/ethereum/ethereumj
@@ -82,7 +102,7 @@ For reference on all existing options, their description and defaults you may re
 To override needed options you may use one of the following ways: 
 * put your options to the `<working dir>/config/ethereumj.conf` file
 * put `user.conf` to the root of your classpath (as a resource) 
-* put your options to any file and supply it via `-Dethereumj.conf.file=<your config>`
+* put your options to any file and supply it via `-Dethereumj.conf.file=<your config>`, accepts several configs, separated by comma applied in provided order: `-Dethereumj.conf.file=<config1>,<config2>`
 * programmatically by using `SystemProperties.CONFIG.override*()`
 * programmatically using by overriding Spring `SystemProperties` bean 
 

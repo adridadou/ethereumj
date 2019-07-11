@@ -51,6 +51,7 @@ public class ProgramInvokeImpl implements ProgramInvoke {
     private Map<DataWord, DataWord> storage;
 
     private final Repository repository;
+    private final Repository origRepository;
     private boolean byTransaction = true;
     private boolean byTestingSuite = false;
     private int callDeep = 0;
@@ -60,8 +61,8 @@ public class ProgramInvokeImpl implements ProgramInvoke {
                              DataWord gasPrice, DataWord gas, DataWord callValue, byte[] msgData,
                              DataWord lastHash, DataWord coinbase, DataWord timestamp, DataWord number, DataWord
                                      difficulty,
-                             DataWord gaslimit, Repository repository, int callDeep, BlockStore blockStore,
-                             boolean isStaticCall, boolean byTestingSuite) {
+                             DataWord gaslimit, Repository repository, Repository origRepository, int callDeep,
+                             BlockStore blockStore, boolean isStaticCall, boolean byTestingSuite) {
 
         // Transaction env
         this.address = address;
@@ -83,6 +84,7 @@ public class ProgramInvokeImpl implements ProgramInvoke {
         this.gaslimit = gaslimit;
 
         this.repository = repository;
+        this.origRepository = origRepository;
         this.byTransaction = false;
         this.callDeep = callDeep;
         this.blockStore = blockStore;
@@ -94,9 +96,10 @@ public class ProgramInvokeImpl implements ProgramInvoke {
                              byte[] gasPrice, byte[] gas, byte[] callValue, byte[] msgData,
                              byte[] lastHash, byte[] coinbase, long timestamp, long number, byte[] difficulty,
                              byte[] gaslimit,
-                             Repository repository, BlockStore blockStore, boolean byTestingSuite) {
+                             Repository repository, Repository origRepository, BlockStore blockStore,
+                             boolean byTestingSuite) {
         this(address, origin, caller, balance, gasPrice, gas, callValue, msgData, lastHash, coinbase,
-                timestamp, number, difficulty, gaslimit, repository, blockStore);
+                timestamp, number, difficulty, gaslimit, repository, origRepository, blockStore);
         this.byTestingSuite = byTestingSuite;
     }
 
@@ -105,28 +108,29 @@ public class ProgramInvokeImpl implements ProgramInvoke {
                              byte[] gasPrice, byte[] gas, byte[] callValue, byte[] msgData,
                              byte[] lastHash, byte[] coinbase, long timestamp, long number, byte[] difficulty,
                              byte[] gaslimit,
-                             Repository repository, BlockStore blockStore) {
+                             Repository repository, Repository origRepository, BlockStore blockStore) {
 
         // Transaction env
-        this.address = new DataWord(address);
-        this.origin = new DataWord(origin);
-        this.caller = new DataWord(caller);
-        this.balance = new DataWord(balance);
-        this.gasPrice = new DataWord(gasPrice);
-        this.gas = new DataWord(gas);
+        this.address = DataWord.of(address);
+        this.origin = DataWord.of(origin);
+        this.caller = DataWord.of(caller);
+        this.balance = DataWord.of(balance);
+        this.gasPrice = DataWord.of(gasPrice);
+        this.gas = DataWord.of(gas);
         this.gasLong = this.gas.longValueSafe();
-        this.callValue = new DataWord(callValue);
+        this.callValue = DataWord.of(callValue);
         this.msgData = msgData;
 
         // last Block env
-        this.prevHash = new DataWord(lastHash);
-        this.coinbase = new DataWord(coinbase);
-        this.timestamp = new DataWord(timestamp);
-        this.number = new DataWord(number);
-        this.difficulty = new DataWord(difficulty);
-        this.gaslimit = new DataWord(gaslimit);
+        this.prevHash = DataWord.of(lastHash);
+        this.coinbase = DataWord.of(coinbase);
+        this.timestamp = DataWord.of(timestamp);
+        this.number = DataWord.of(number);
+        this.difficulty = DataWord.of(difficulty);
+        this.gaslimit = DataWord.of(gaslimit);
 
         this.repository = repository;
+        this.origRepository = origRepository;
         this.blockStore = blockStore;
     }
 
@@ -187,13 +191,13 @@ public class ProgramInvokeImpl implements ProgramInvoke {
 
         if (msgData == null || index >= msgData.length
                 || tempIndex.compareTo(MAX_MSG_DATA) == 1)
-            return new DataWord();
+            return DataWord.ZERO;
         if (index + size > msgData.length)
             size = msgData.length - index;
 
         byte[] data = new byte[32];
         System.arraycopy(msgData, index, data, 0, size);
-        return new DataWord(data);
+        return DataWord.of(data);
     }
 
     /*  CALLDATASIZE */
@@ -201,7 +205,7 @@ public class ProgramInvokeImpl implements ProgramInvoke {
 
         if (msgData == null || msgData.length == 0) return DataWord.ZERO;
         int size = msgData.length;
-        return new DataWord(size);
+        return DataWord.of(size);
     }
 
     /*  CALLDATACOPY */
@@ -261,6 +265,13 @@ public class ProgramInvokeImpl implements ProgramInvoke {
         return repository;
     }
 
+    /**
+     * Repository at the start of top-level ttransaction execution
+     */
+    public Repository getOrigRepository() {
+        return origRepository;
+    }
+
     @Override
     public BlockStore getBlockStore() {
         return blockStore;
@@ -309,6 +320,7 @@ public class ProgramInvokeImpl implements ProgramInvoke {
         if (origin != null ? !origin.equals(that.origin) : that.origin != null) return false;
         if (prevHash != null ? !prevHash.equals(that.prevHash) : that.prevHash != null) return false;
         if (repository != null ? !repository.equals(that.repository) : that.repository != null) return false;
+        if (origRepository != null ? !origRepository.equals(that.origRepository) : that.origRepository != null) return false;
         if (storage != null ? !storage.equals(that.storage) : that.storage != null) return false;
         if (timestamp != null ? !timestamp.equals(that.timestamp) : that.timestamp != null) return false;
 
@@ -334,6 +346,7 @@ public class ProgramInvokeImpl implements ProgramInvoke {
                 ", gaslimit=" + gaslimit +
                 ", storage=" + storage +
                 ", repository=" + repository +
+                ", origRepository=" + origRepository +
                 ", byTransaction=" + byTransaction +
                 ", byTestingSuite=" + byTestingSuite +
                 ", callDeep=" + callDeep +

@@ -95,7 +95,7 @@ public class TestRunner {
 
         IndexedBlockStore blockStore = new IndexedBlockStore();
         blockStore.init(new HashMapDB<byte[]>(), new HashMapDB<byte[]>());
-        blockStore.saveBlock(genesis, genesis.getCumulativeDifficulty(), true);
+        blockStore.saveBlock(genesis, genesis.getDifficultyBI(), true);
 
         ProgramInvokeFactoryImpl programInvokeFactory = new ProgramInvokeFactoryImpl();
 
@@ -106,7 +106,7 @@ public class TestRunner {
         PendingStateImpl pendingState = new PendingStateImpl(new EthereumListenerAdapter());
 
         blockchain.setBestBlock(genesis);
-        blockchain.setTotalDifficulty(genesis.getCumulativeDifficulty());
+        blockchain.setTotalDifficulty(genesis.getDifficultyBI());
         blockchain.setParentHeaderValidator(new CommonConfig().parentHeaderValidator());
         blockchain.setProgramInvokeFactory(programInvokeFactory);
 
@@ -148,7 +148,7 @@ public class TestRunner {
 
             ImportResult importResult = blockchain.tryToConnect(block);
             logger.debug("{} ~ {} difficulty: {} ::: {}", block.getShortHash(), shortHash(block.getParentHash()),
-                    block.getCumulativeDifficulty(), importResult.toString());
+                    block.getDifficultyBI(), importResult.toString());
         }
 
         repository = blockchain.getRepository();
@@ -159,9 +159,13 @@ public class TestRunner {
 
         byte[] bestHash = Hex.decode(testCase.getLastblockhash().startsWith("0x") ?
                 testCase.getLastblockhash().substring(2) : testCase.getLastblockhash());
-        String finalRoot = Hex.toHexString(blockStore.getBlockByHash(bestHash).getStateRoot());
 
-        if (!finalRoot.equals(currRoot)){
+        String finalRoot = null;
+        if (blockStore.getBlockByHash(bestHash) != null) {
+            finalRoot = Hex.toHexString(blockStore.getBlockByHash(bestHash).getStateRoot());
+        }
+
+        if (!currRoot.equals(finalRoot)){
             String formattedString = String.format("Root hash doesn't match best: expected: %s current: %s",
                     finalRoot, currRoot);
             results.add(formattedString);
@@ -219,7 +223,7 @@ public class TestRunner {
 
             ProgramInvoke programInvoke = new ProgramInvokeImpl(address, origin, caller, balance,
                     gasPrice, gas, callValue, msgData, lastHash, coinbase,
-                    timestamp, number, difficulty, gaslimit, repository, new BlockStoreDummy(), true);
+                    timestamp, number, difficulty, gaslimit, repository, repository.clone(), new BlockStoreDummy(), true);
 
             /* 3. Create Program - exec.code */
             /* 4. run VM */
@@ -335,7 +339,7 @@ public class TestRunner {
                             }
 
                             Map<DataWord, DataWord> testStorage = contractDetails.getStorage();
-                            DataWord actualValue = testStorage.get(new DataWord(storageKey.getData()));
+                            DataWord actualValue = testStorage.get(DataWord.of(storageKey.getData()));
 
                             if (actualValue == null ||
                                     !Arrays.equals(expectedStValue, actualValue.getData())) {
